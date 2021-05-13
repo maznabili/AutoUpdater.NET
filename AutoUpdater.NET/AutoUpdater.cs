@@ -64,11 +64,16 @@ namespace AutoUpdaterDotNET
     {
         private static System.Timers.Timer _remindLaterTimer;
 
-        internal static bool IsWinFormsApplication;
+        private static bool _isWinFormsApplication;
 
         internal static Uri BaseUri;
 
         internal static bool Running;
+
+        /// <summary>
+        ///     You can set this field to your current version if you don't want to determine the version from the assembly.
+        /// </summary>
+        public static Version InstalledVersion;
 
         /// <summary>
         ///     Set it to folder path where you want to download the update file. If not provided then it defaults to Temp folder.
@@ -268,9 +273,9 @@ namespace AutoUpdaterDotNET
 
                 AppCastURL = appCast;
 
-                IsWinFormsApplication = Application.MessageLoop;
+                _isWinFormsApplication = Application.MessageLoop;
 
-                if (!IsWinFormsApplication)
+                if (!_isWinFormsApplication)
                 {
                     Application.EnableVisualStyles();
                 }
@@ -355,7 +360,7 @@ namespace AutoUpdaterDotNET
             using (MyWebClient client = GetWebClient(BaseUri, BasicAuthXML))
             {
                 string xml = client.DownloadString(BaseUri);
-
+                
                 if (ParseUpdateInfoEvent == null)
                 {
                     XmlSerializer xmlSerializer = new XmlSerializer(typeof(UpdateInfoEventArgs));
@@ -375,8 +380,8 @@ namespace AutoUpdaterDotNET
                 throw new MissingFieldException();
             }
 
-            args.InstalledVersion = mainAssembly.GetName().Version;
-            args.IsUpdateAvailable = new Version(args.CurrentVersion) > mainAssembly.GetName().Version;
+            args.InstalledVersion = InstalledVersion != null ? InstalledVersion : mainAssembly.GetName().Version;
+            args.IsUpdateAvailable = new Version(args.CurrentVersion) > args.InstalledVersion;
 
             if (!Mandatory)
             {
@@ -484,67 +489,73 @@ namespace AutoUpdaterDotNET
 
         private static void ShowError(Exception exception)
         {
-            if (ReportErrors)
+            if (CheckForUpdateEvent != null)
             {
-                if (exception is WebException)
+                CheckForUpdateEvent(new UpdateInfoEventArgs {Error = exception});
+            }
+            else
+            {
+                if (ReportErrors)
                 {
-                    MessageBox.Show(
-                        Resources.UpdateCheckFailedMessage,
-                        Resources.UpdateCheckFailedCaption, MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
-                else
-                {
-                    MessageBox.Show(exception.ToString(),
-                        exception.GetType().ToString(), MessageBoxButtons.OK,
-                        MessageBoxIcon.Error);
+                    if (exception is WebException)
+                    {
+                        MessageBox.Show(
+                            Resources.UpdateCheckFailedMessage,
+                            Resources.UpdateCheckFailedCaption, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                    else
+                    {
+                        MessageBox.Show(exception.Message,
+                            exception.GetType().ToString(), MessageBoxButtons.OK,
+                            MessageBoxIcon.Error);
+                    }
                 }
             }
         }
 
         /// <summary>
-        /// Detects and exits all instances of running assembly, including current.
+        ///     Detects and exits all instances of running assembly, including current.
         /// </summary>
         private static void Exit()
         {
+            var currentProcess = Process.GetCurrentProcess();
+            foreach (var process in Process.GetProcessesByName(currentProcess.ProcessName))
+            {
+                string processPath;
+                try
+                {
+                    processPath = process.MainModule?.FileName;
+                }
+                catch (Win32Exception)
+                {
+                    // Current process should be same as processes created by other instances of the application so it should be able to access modules of other instances. 
+                    // This means this is not the process we are looking for so we can safely skip this.
+                    continue;
+                }
+
+                //get all instances of assembly except current
+                if (process.Id != currentProcess.Id && currentProcess.MainModule?.FileName == processPath)
+                {
+                    if (process.CloseMainWindow())
+                    {
+                        process.WaitForExit((int) TimeSpan.FromSeconds(10)
+                            .TotalMilliseconds); //give some time to process message
+                    }
+
+                    if (!process.HasExited)
+                    {
+                        process.Kill(); //TODO show UI message asking user to close program himself instead of silently killing it
+                    }
+                }
+            }
+
             if (ApplicationExitEvent != null)
             {
                 ApplicationExitEvent();
             }
             else
             {
-                var currentProcess = Process.GetCurrentProcess();
-                foreach (var process in Process.GetProcessesByName(currentProcess.ProcessName))
-                {
-                    string processPath;
-                    try
-                    {
-                        processPath = process.MainModule.FileName;
-                    }
-                    catch (Win32Exception)
-                    {
-                        // Current process should be same as processes created by other instances of the application so it should be able to access modules of other instances. 
-                        // This means this is not the process we are looking for so we can safely skip this.
-                        continue;
-                    }
-
-                    if (process.Id != currentProcess.Id &&
-                        currentProcess.MainModule.FileName == processPath
-                    ) //get all instances of assembly except current
-                    {
-                        if (process.CloseMainWindow())
-                        {
-                            process.WaitForExit((int) TimeSpan.FromSeconds(10)
-                                .TotalMilliseconds); //give some time to process message
-                        }
-
-                        if (!process.HasExited)
-                        {
-                            process.Kill(); //TODO show UI message asking user to close program himself instead of silently killing it
-                        }
-                    }
-                }
-
-                if (IsWinFormsApplication)
+                if (_isWinFormsApplication)
                 {
                     MethodInvoker methodInvoker = Application.Exit;
                     methodInvoker.Invoke();
@@ -634,7 +645,7 @@ namespace AutoUpdaterDotNET
         }
 
         /// <summary>
-        /// Shows standard update dialog.
+        ///     Shows standard update dialog.
         /// </summary>
         public static void ShowUpdateForm(UpdateInfoEventArgs args)
         {
@@ -670,10 +681,7 @@ namespace AutoUpdaterDotNET
             }
             else
             {
-                if (basicAuthentication != null)
-                {
-                    webClient.Headers[HttpRequestHeader.Authorization] = basicAuthentication.ToString();
-                }
+                basicAuthentication?.Apply(ref webClient);
 
                 webClient.Headers[HttpRequestHeader.UserAgent] = HttpUserAgent;
             }

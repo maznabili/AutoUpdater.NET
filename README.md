@@ -12,7 +12,7 @@ PM> Install-Package Autoupdater.NET.Official
 
 ## How it works
 
-AutoUpdater.NET downloads the XML file containing update information from your server. It uses this XML file to get the information about the latest version of the software. If latest version of the software is greater then current version of the software installed on User's PC then AutoUpdater.NET shows update dialog to the user. If user press the update button to update the software then It downloads the update file (Installer) from URL provided in XML file and executes the installer file it just downloaded. It is a job of installer after this point to carry out the update. If you provide zip file URL instead of installer then AutoUpdater.NET will extract the contents of zip file to application directory.
+AutoUpdater.NET downloads the XML file containing update information from your server. It uses this XML file to get the information about the latest version of the software. If the latest version of the software is greater than the current version of the software installed on User's PC then AutoUpdater.NET shows update dialog to the user. If user press the update button to update the software then It downloads the update file (Installer) from URL provided in XML file and executes the installer file it just downloaded. It is a job of installer after this point to carry out the update. If you provide zip file URL instead of installer then AutoUpdater.NET will extract the contents of zip file to application directory.
 
 ## Using the code
 
@@ -89,6 +89,14 @@ AutoUpdater.Start("http://rbsoft.org/updates/AutoUpdaterTest.xml", myAssembly);
 
 ## Configuration Options
 
+### Provide installed version manually
+
+If you don't want AutoUpdater.NET to determine the installed version from assembly then you can provide your own version by assigning it to InstalledVersion field as shown below.
+
+````csharp
+AutoUpdater.InstalledVersion = new Version("1.2");
+````
+
 ### Download Update file and XML using FTP
 
 If you like to use ftp XML URL to check for updates or download the update file then you can provide you FTP credentials in alternative Start method as shown below.
@@ -140,9 +148,9 @@ AutoUpdater.Mandatory = true;
 AutoUpdater.UpdateMode = Mode.Forced;
 ````
 
-### Basic Authetication
+### Basic Authentication
 
-You can provide Basic Authetication for XML, Update file and Change Log as shown in below code.
+You can provide Basic Authentication for XML, Update file and Change Log as shown in below code.
 
 ````csharp
 BasicAuthentication basicAuthentication = new BasicAuthentication("myUserName", "myPassword");
@@ -237,7 +245,7 @@ AutoUpdater.UpdateFormSize = new System.Drawing.Size(800, 600);
 
 ### Change storage method of Remind Later and Skip options
 
-You can change how AutoUpdater.NET saves the Remind Later and Skip values by assigning the PersistenceProvider. If you don't provide a PersistenceProvider then it will save the values in Windows registy.
+You can change how AutoUpdater.NET saves the Remind Later and Skip values by assigning the PersistenceProvider. If you don't provide a PersistenceProvider then it will save the values in Windows registry.
 
 If you are using .NET 4.0 or above then you can use JsonFilePersistenceProvider instead of default RegistryPersistenceProvider as shown below.
 
@@ -302,7 +310,7 @@ AutoUpdater.CheckForUpdateEvent += AutoUpdaterOnCheckForUpdateEvent;
 
 private void AutoUpdaterOnCheckForUpdateEvent(UpdateInfoEventArgs args)
 {
-    if (args != null)
+    if (args.Error == null)
     {
         if (args.IsUpdateAvailable)
         {
@@ -325,10 +333,10 @@ private void AutoUpdaterOnCheckForUpdateEvent(UpdateInfoEventArgs args)
                         MessageBoxButtons.YesNo,
                         MessageBoxIcon.Information);
             }
-
+    
             // Uncomment the following line if you want to show standard update dialog instead.
             // AutoUpdater.ShowUpdateForm(args);
-
+    
             if (dialogResult.Equals(DialogResult.Yes) || dialogResult.Equals(DialogResult.OK))
             {
                 try
@@ -353,9 +361,18 @@ private void AutoUpdaterOnCheckForUpdateEvent(UpdateInfoEventArgs args)
     }
     else
     {
-        MessageBox.Show(
-                @"There is a problem reaching update server please check your internet connection and try again later.",
-                @"Update check failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        if (args.Error is WebException)
+        {
+            MessageBox.Show(
+                @"There is a problem reaching update server. Please check your internet connection and try again later.",
+                @"Update Check Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        else
+        {
+            MessageBox.Show(args.Error.Message,
+                args.Error.GetType().ToString(), MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
     }
 }
 ````

@@ -178,5 +178,13 @@ namespace AutoUpdaterDotNET
         {
             AutoUpdater.Running = false;
         }
+
+        private void UpdateForm_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            if (AutoUpdater.Mandatory && AutoUpdater.UpdateMode == Mode.Forced)
+            {
+                e.Cancel = ModifierKeys == Keys.Alt || ModifierKeys == Keys.F4;
+            }
+        }
     }
 }

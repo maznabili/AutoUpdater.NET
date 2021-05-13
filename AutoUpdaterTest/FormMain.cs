@@ -121,6 +121,9 @@ namespace AutoUpdaterTest
             //Uncomment following line if you want to check for update synchronously.
             //AutoUpdater.Synchronous = true;
 
+            //Uncomment following line if you don't want the library to determine the installed version from assembly.
+            //AutoUpdater.InstalledVersion = new Version("2.0.0.1");
+
             AutoUpdater.Start("https://rbsoft.org/updates/AutoUpdaterTest.xml");
         }
 
@@ -156,7 +159,7 @@ namespace AutoUpdaterTest
 
         private void AutoUpdaterOnCheckForUpdateEvent(UpdateInfoEventArgs args)
         {
-            if (args != null)
+            if (args.Error == null)
             {
                 if (args.IsUpdateAvailable)
                 {
@@ -210,9 +213,18 @@ namespace AutoUpdaterTest
             }
             else
             {
-                MessageBox.Show(
-                    @"There is a problem reaching update server. Please check your internet connection and try again later.",
-                    @"Update Check Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                if (args.Error is WebException)
+                {
+                    MessageBox.Show(
+                        @"There is a problem reaching update server. Please check your internet connection and try again later.",
+                        @"Update Check Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                else
+                {
+                    MessageBox.Show(args.Error.Message,
+                        args.Error.GetType().ToString(), MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                }
             }
         }
 

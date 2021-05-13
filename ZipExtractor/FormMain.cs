@@ -4,7 +4,9 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
+using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Windows.Forms;
 using ZipExtractor.Properties;
 
@@ -12,8 +14,9 @@ namespace ZipExtractor
 {
     public partial class FormMain : Form
     {
+        private const int MaxRetries = 2;
         private BackgroundWorker _backgroundWorker;
-        readonly StringBuilder _logBuilder = new StringBuilder();
+        private readonly StringBuilder _logBuilder = new StringBuilder();
 
         public FormMain()
         {
@@ -48,11 +51,11 @@ namespace ZipExtractor
 
                 _backgroundWorker.DoWork += (o, eventArgs) =>
                 {
-                    foreach (var process in Process.GetProcesses())
+                    foreach (var process in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(executablePath)))
                     {
                         try
                         {
-                            if (process.MainModule.FileName.Equals(executablePath))
+                            if (process.MainModule != null && process.MainModule.FileName.Equals(executablePath))
                             {
                                 _logBuilder.AppendLine("Waiting for application process to exit...");
 
@@ -69,34 +72,138 @@ namespace ZipExtractor
                     _logBuilder.AppendLine("BackgroundWorker started successfully.");
 
                     var path = args[2];
+                    
+                    // Ensures that the last character on the extraction path
+                    // is the directory separator char.
+                    // Without this, a malicious zip file could try to traverse outside of the expected
+                    // extraction path.
+                    if (!path.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal))
+                        path += Path.DirectorySeparatorChar;
 
+#if NET45
+                    var archive = ZipFile.OpenRead(args[1]);
+                    
+                    var entries = archive.Entries;
+#else
                     // Open an existing zip file for reading.
-                    ZipStorer zip = ZipStorer.Open(args[1], FileAccess.Read);
-
+                    var zip = ZipStorer.Open(args[1], FileAccess.Read);
+                    
                     // Read the central directory collection.
-                    List<ZipStorer.ZipFileEntry> dir = zip.ReadCentralDir();
+                    var entries = zip.ReadCentralDir();
+#endif
 
-                    _logBuilder.AppendLine($"Found total of {dir.Count} files and folders inside the zip file.");
+                    _logBuilder.AppendLine($"Found total of {entries.Count} files and folders inside the zip file.");
 
-                    for (var index = 0; index < dir.Count; index++)
+                    try
                     {
-                        if (_backgroundWorker.CancellationPending)
+                        int progress = 0;
+                        for (var index = 0; index < entries.Count; index++)
                         {
-                            eventArgs.Cancel = true;
-                            zip.Close();
-                            return;
+                            if (_backgroundWorker.CancellationPending)
+                            {
+                                eventArgs.Cancel = true;
+                                break;
+                            }
+
+                            var entry = entries[index];
+
+#if NET45
+                            string currentFile = string.Format(Resources.CurrentFileExtracting, entry.FullName);
+#else
+                            string currentFile = string.Format(Resources.CurrentFileExtracting, entry.FilenameInZip);
+#endif
+                            _backgroundWorker.ReportProgress(progress, currentFile);
+                            int retries = 0;
+                            bool notCopied = true;
+                            while (notCopied)
+                            {
+                                string filePath = String.Empty;
+                                try
+                                {
+#if NET45
+                                    filePath = Path.Combine(path, entry.FullName);
+                                    if (!entry.IsDirectory())
+                                    {
+                                        var parentDirectory = Path.GetDirectoryName(filePath);
+                                        if (!Directory.Exists(parentDirectory))
+                                        {
+                                            Directory.CreateDirectory(parentDirectory);
+                                        }
+                                        entry.ExtractToFile(filePath, true);
+                                    }
+#else
+                                    filePath = Path.Combine(path, entry.FilenameInZip);
+                                    zip.ExtractFile(entry, filePath);
+#endif
+                                    notCopied = false;
+                                }
+                                catch (IOException exception)
+                                {
+                                    const int errorSharingViolation = 0x20;
+                                    const int errorLockViolation = 0x21;
+                                    var errorCode = Marshal.GetHRForException(exception) & 0x0000FFFF;
+                                    if (errorCode == errorSharingViolation || errorCode == errorLockViolation)
+                                    {
+                                        retries++;
+                                        if (retries > MaxRetries)
+                                        {
+                                            throw;
+                                        }
+
+                                        List<Process> lockingProcesses = null;
+                                        if (Environment.OSVersion.Version.Major >= 6 && retries >= 2)
+                                        {
+                                            try
+                                            {
+                                                lockingProcesses = FileUtil.WhoIsLocking(filePath);
+                                            }
+                                            catch (Exception)
+                                            {
+                                                // ignored
+                                            }
+                                        }
+
+                                        if (lockingProcesses == null)
+                                        {
+                                            Thread.Sleep(5000);
+                                        }
+                                        else
+                                        {
+                                            foreach (var lockingProcess in lockingProcesses)
+                                            {
+                                                var dialogResult = MessageBox.Show(
+                                                    string.Format(Resources.FileStillInUseMessage,
+                                                        lockingProcess.ProcessName, filePath),
+                                                    Resources.FileStillInUseCaption,
+                                                    MessageBoxButtons.RetryCancel, MessageBoxIcon.Error);
+                                                if (dialogResult == DialogResult.Cancel)
+                                                {
+                                                    throw;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    else
+                                    {
+                                        throw;
+                                    }
+                                }
+                            }
+
+                            progress = (index + 1) * 100 / entries.Count;
+                            _backgroundWorker.ReportProgress(progress, currentFile);
+
+                            _logBuilder.AppendLine($"{currentFile} [{progress}%]");
                         }
-
-                        ZipStorer.ZipFileEntry entry = dir[index];
-                        zip.ExtractFile(entry, Path.Combine(path, entry.FilenameInZip));
-                        string currentFile = string.Format(Resources.CurrentFileExtracting, entry.FilenameInZip);
-                        int progress = (index + 1) * 100 / dir.Count;
-                        _backgroundWorker.ReportProgress(progress, currentFile);
-
-                        _logBuilder.AppendLine($"{currentFile} [{progress}%]");
                     }
-
-                    zip.Close();
+                    finally
+                    {
+#if NET45
+                        archive.Dispose();
+#else
+                        zip.Close();
+#endif
+                    }
                 };
 
                 _backgroundWorker.ProgressChanged += (o, eventArgs) =>
